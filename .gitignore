@@ -1,0 +1,50 @@
+# ================================================================
+# .gitignore — Projeto Luna Secretaria IA
+# ================================================================
+
+# ── VARIÁVEIS DE AMBIENTE (NUNCA subir para o repositório) ──────
+.env
+.env.local
+.env.production
+.env.development
+*.env
+
+# ── NODE / REACT ─────────────────────────────────────────────────
+node_modules/
+dist/
+build/
+.vite/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ── CREDENCIAIS E CHAVES ─────────────────────────────────────────
+*.pem
+*.key
+*.cert
+*.p12
+google-credentials.json
+service-account.json
+*credentials*.json
+*secrets*.json
+
+# ── SUPABASE ─────────────────────────────────────────────────────
+supabase/.env
+.supabase/
+
+# ── SISTEMA OPERACIONAL ──────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── EDITORES ─────────────────────────────────────────────────────
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# ── TEMPORÁRIOS ──────────────────────────────────────────────────
+tmp/
+temp/
+*.tmp

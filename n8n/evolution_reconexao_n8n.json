@@ -1,0 +1,442 @@
+{
+  "name": "Evolution API — Monitoramento e Reconexão Automática",
+  "_meta": {
+    "versao": "1.0",
+    "descricao": "Dois workflows independentes: 1) Cron a cada 30min verifica e reconecta instâncias caídas. 2) Notificação imediata via Telegram quando uma instância cai.",
+    "variaveis_para_substituir": [
+      "SUA_EVOLUTION_URL    — URL da Evolution API no Railway (ex: https://evolution.up.railway.app)",
+      "SUA_EVOLUTION_KEY    — AUTHENTICATION_API_KEY definida no deploy",
+      "SEU_TELEGRAM_TOKEN  — Token do bot Telegram de notificações (opcional)",
+      "SEU_TELEGRAM_CHAT_ID — Seu chat ID no Telegram (opcional)",
+      "SEU_PROJETO          — ID do projeto Supabase",
+      "SUA_SUPABASE_ANON_KEY — Chave anon do Supabase"
+    ],
+    "como_usar": "Importe este arquivo no n8n via Settings → Import Workflow. Ative os dois workflows separadamente."
+  },
+
+  "workflows": [
+
+    {
+      "name": "WF1 — Reconexão Automática a cada 30min",
+      "nodes": [
+
+        {
+          "id": "rc_cron",
+          "name": "1. Cron — A cada 30 minutos",
+          "type": "n8n-nodes-base.scheduleTrigger",
+          "typeVersion": 1,
+          "position": [240, 300],
+          "parameters": {
+            "rule": {
+              "interval": [{ "field": "cronExpression", "expression": "*/30 * * * *" }]
+            }
+          },
+          "notes": "Roda a cada 30 minutos, 24h por dia, 7 dias por semana."
+        },
+
+        {
+          "id": "rc_buscar_clinicas",
+          "name": "2. Buscar Instâncias Ativas no Supabase",
+          "type": "n8n-nodes-base.httpRequest",
+          "typeVersion": 4,
+          "position": [460, 300],
+          "parameters": {
+            "method": "GET",
+            "url": "https://SEU_PROJETO.supabase.co/rest/v1/clinicas?ativo=eq.true&select=id,nome,zapi_instancia&zapi_instancia=not.is.null",
+            "sendHeaders": true,
+            "headerParameters": {
+              "parameters": [
+                { "name": "apikey",        "value": "SUA_SUPABASE_ANON_KEY" },
+                { "name": "Authorization", "value": "Bearer SUA_SUPABASE_ANON_KEY" }
+              ]
+            }
+          },
+          "notes": "Busca todas as clínicas ativas que têm instância Evolution configurada."
+        },
+
+        {
+          "id": "rc_split",
+          "name": "3. Split por Clínica",
+          "type": "n8n-nodes-base.splitInBatches",
+          "typeVersion": 3,
+          "position": [680, 300],
+          "parameters": { "batchSize": 1, "options": {} }
+        },
+
+        {
+          "id": "rc_checar_status",
+          "name": "4. Checar Status da Instância",
+          "type": "n8n-nodes-base.httpRequest",
+          "typeVersion": 4,
+          "position": [900, 300],
+          "parameters": {
+            "method": "GET",
+            "url": "=https://SUA_EVOLUTION_URL/instance/connectionState/{{ $json.zapi_instancia }}",
+            "sendHeaders": true,
+            "headerParameters": {
+              "parameters": [
+                { "name": "apikey", "value": "SUA_EVOLUTION_KEY" }
+              ]
+            },
+            "options": { "response": { "response": { "neverError": true } } }
+          },
+          "notes": "Retorna o estado atual: 'open' = conectado, 'close' ou erro = desconectado."
+        },
+
+        {
+          "id": "rc_if_caiu",
+          "name": "5. Instância Caiu?",
+          "type": "n8n-nodes-base.if",
+          "typeVersion": 2,
+          "position": [1120, 300],
+          "parameters": {
+            "conditions": {
+              "conditions": [
+                {
+                  "leftValue": "={{ $json.instance?.state || $json.state || 'close' }}",
+                  "rightValue": "open",
+                  "operator": { "type": "string", "operation": "notEquals" }
+                }
+              ],
+              "combinator": "and"
+            }
+          },
+          "notes": "TRUE = instância não está 'open' → precisa reconectar. FALSE = tudo certo, ignora."
+        },
+
+        {
+          "id": "rc_reconectar",
+          "name": "6. Reconectar Instância",
+          "type": "n8n-nodes-base.httpRequest",
+          "typeVersion": 4,
+          "position": [1340, 200],
+          "parameters": {
+            "method": "GET",
+            "url": "=https://SUA_EVOLUTION_URL/instance/connect/{{ $('3. Split por Clínica').item.json.zapi_instancia }}",
+            "sendHeaders": true,
+            "headerParameters": {
+              "parameters": [
+                { "name": "apikey", "value": "SUA_EVOLUTION_KEY" }
+              ]
+            }
+          },
+          "notes": "Tenta reconectar automaticamente. Se a sessão ainda estiver válida no celular, reconecta sozinho. Se não estiver, gera novo QR Code."
+        },
+
+        {
+          "id": "rc_checar_qr",
+          "name": "7. Reconectou ou Precisa de QR?",
+          "type": "n8n-nodes-base.if",
+          "typeVersion": 2,
+          "position": [1560, 200],
+          "parameters": {
+            "conditions": {
+              "conditions": [
+                {
+                  "leftValue": "={{ $json.qrcode?.base64 ? 'qr' : 'ok' }}",
+                  "rightValue": "qr",
+                  "operator": { "type": "string", "operation": "equals" }
+                }
+              ],
+              "combinator": "and"
+            }
+          },
+          "notes": "Se a resposta contiver um QR Code, significa que a sessão expirou e precisa de intervenção manual."
+        },
+
+        {
+          "id": "rc_log_ok",
+          "name": "8a. Registrar Reconexão Automática",
+          "type": "n8n-nodes-base.httpRequest",
+          "typeVersion": 4,
+          "position": [1780, 120],
+          "parameters": {
+            "method": "POST",
+            "url": "https://SEU_PROJETO.supabase.co/rest/v1/evolution_logs",
+            "sendHeaders": true,
+            "headerParameters": {
+              "parameters": [
+                { "name": "apikey",        "value": "SUA_SUPABASE_ANON_KEY" },
+                { "name": "Authorization", "value": "Bearer SUA_SUPABASE_ANON_KEY" },
+                { "name": "Content-Type",  "value": "application/json" }
+              ]
+            },
+            "sendBody": true,
+            "bodyParameters": {
+              "parameters": [
+                {
+                  "name": "=",
+                  "value": "={ \"clinica_id\": \"{{ $('3. Split por Clínica').item.json.id }}\", \"instancia\": \"{{ $('3. Split por Clínica').item.json.zapi_instancia }}\", \"tipo\": \"reconexao_automatica\", \"status\": \"sucesso\", \"criado_em\": \"{{ new Date().toISOString() }}\" }"
+                }
+              ]
+            }
+          },
+          "notes": "Salva no banco que a reconexão foi automática. Útil para auditoria."
+        },
+
+        {
+          "id": "rc_alerta_qr",
+          "name": "8b. Alertar — Precisa de QR Code Manual",
+          "type": "n8n-nodes-base.httpRequest",
+          "typeVersion": 4,
+          "position": [1780, 300],
+          "parameters": {
+            "method": "POST",
+            "url": "https://api.telegram.org/botSEU_TELEGRAM_TOKEN/sendMessage",
+            "sendHeaders": true,
+            "headerParameters": [{ "name": "Content-Type", "value": "application/json" }],
+            "sendBody": true,
+            "bodyParameters": {
+              "parameters": [
+                {
+                  "name": "=",
+                  "value": "={ \"chat_id\": \"SEU_TELEGRAM_CHAT_ID\", \"text\": \"⚠️ *WhatsApp desconectado!*\\n\\nClínica: {{ $('3. Split por Clínica').item.json.nome }}\\nInstância: {{ $('3. Split por Clínica').item.json.zapi_instancia }}\\n\\n🔴 A sessão expirou e precisa de QR Code manual.\\n\\nAcesse: https://SUA_EVOLUTION_URL para reconectar.\", \"parse_mode\": \"Markdown\" }"
+                }
+              ]
+            }
+          },
+          "notes": "Só envia alerta quando a reconexão automática não funciona e precisa de intervenção manual (QR Code). Remove este nó se não quiser usar Telegram."
+        },
+
+        {
+          "id": "rc_log_qr",
+          "name": "8c. Registrar Necessidade de QR",
+          "type": "n8n-nodes-base.httpRequest",
+          "typeVersion": 4,
+          "position": [2000, 300],
+          "parameters": {
+            "method": "POST",
+            "url": "https://SEU_PROJETO.supabase.co/rest/v1/evolution_logs",
+            "sendHeaders": true,
+            "headerParameters": {
+              "parameters": [
+                { "name": "apikey",        "value": "SUA_SUPABASE_ANON_KEY" },
+                { "name": "Authorization", "value": "Bearer SUA_SUPABASE_ANON_KEY" },
+                { "name": "Content-Type",  "value": "application/json" }
+              ]
+            },
+            "sendBody": true,
+            "bodyParameters": {
+              "parameters": [
+                {
+                  "name": "=",
+                  "value": "={ \"clinica_id\": \"{{ $('3. Split por Clínica').item.json.id }}\", \"instancia\": \"{{ $('3. Split por Clínica').item.json.zapi_instancia }}\", \"tipo\": \"qr_necessario\", \"status\": \"alerta_enviado\", \"criado_em\": \"{{ new Date().toISOString() }}\" }"
+                }
+              ]
+            }
+          }
+        }
+      ],
+
+      "connections": {
+        "1. Cron — A cada 30 minutos":           { "main": [[{ "node": "2. Buscar Instâncias Ativas no Supabase", "type": "main", "index": 0 }]] },
+        "2. Buscar Instâncias Ativas no Supabase":{ "main": [[{ "node": "3. Split por Clínica",                  "type": "main", "index": 0 }]] },
+        "3. Split por Clínica":                  { "main": [[{ "node": "4. Checar Status da Instância",          "type": "main", "index": 0 }]] },
+        "4. Checar Status da Instância":         { "main": [[{ "node": "5. Instância Caiu?",                    "type": "main", "index": 0 }]] },
+        "5. Instância Caiu?":                    { "main": [[{ "node": "6. Reconectar Instância",               "type": "main", "index": 0 }], []] },
+        "6. Reconectar Instância":               { "main": [[{ "node": "7. Reconectou ou Precisa de QR?",      "type": "main", "index": 0 }]] },
+        "7. Reconectou ou Precisa de QR?":       { "main": [[{ "node": "8b. Alertar — Precisa de QR Code Manual", "type": "main", "index": 0 }], [{ "node": "8a. Registrar Reconexão Automática", "type": "main", "index": 0 }]] },
+        "8b. Alertar — Precisa de QR Code Manual":{ "main": [[{ "node": "8c. Registrar Necessidade de QR",    "type": "main", "index": 0 }]] }
+      }
+    },
+
+    {
+      "name": "WF2 — Webhook de Queda em Tempo Real",
+      "nodes": [
+
+        {
+          "id": "wh_trigger",
+          "name": "1. Webhook — Evolution Notifica Queda",
+          "type": "n8n-nodes-base.webhook",
+          "typeVersion": 1,
+          "position": [240, 300],
+          "parameters": {
+            "httpMethod": "POST",
+            "path": "evolution-status",
+            "responseMode": "responseNode",
+            "options": {}
+          },
+          "notes": "Configure este webhook na Evolution API em: POST /webhook/set/INSTANCIA com events: ['CONNECTION_UPDATE']. A Evolution chamará aqui quando o status mudar."
+        },
+
+        {
+          "id": "wh_extract",
+          "name": "2. Extrair Evento",
+          "type": "n8n-nodes-base.set",
+          "typeVersion": 3,
+          "position": [460, 300],
+          "parameters": {
+            "mode": "manual",
+            "assignments": {
+              "assignments": [
+                { "name": "instancia",  "value": "={{ $json.body.instance || $json.instance }}", "type": "string" },
+                { "name": "estado",     "value": "={{ $json.body.data?.connection || $json.body.state || 'unknown' }}", "type": "string" },
+                { "name": "evento",     "value": "={{ $json.body.event || 'CONNECTION_UPDATE' }}", "type": "string" }
+              ]
+            }
+          }
+        },
+
+        {
+          "id": "wh_if_caiu",
+          "name": "3. É uma Queda?",
+          "type": "n8n-nodes-base.if",
+          "typeVersion": 2,
+          "position": [680, 300],
+          "parameters": {
+            "conditions": {
+              "conditions": [
+                {
+                  "leftValue": "={{ $json.estado }}",
+                  "rightValue": "close",
+                  "operator": { "type": "string", "operation": "equals" }
+                }
+              ],
+              "combinator": "and"
+            }
+          },
+          "notes": "Filtra apenas eventos de desconexão. Ignora eventos de conexão ou outros."
+        },
+
+        {
+          "id": "wh_buscar_clinica",
+          "name": "4. Buscar Clínica pela Instância",
+          "type": "n8n-nodes-base.httpRequest",
+          "typeVersion": 4,
+          "position": [900, 200],
+          "parameters": {
+            "method": "GET",
+            "url": "=https://SEU_PROJETO.supabase.co/rest/v1/clinicas?zapi_instancia=eq.{{ $json.instancia }}&select=id,nome&limit=1",
+            "sendHeaders": true,
+            "headerParameters": {
+              "parameters": [
+                { "name": "apikey",        "value": "SUA_SUPABASE_ANON_KEY" },
+                { "name": "Authorization", "value": "Bearer SUA_SUPABASE_ANON_KEY" }
+              ]
+            }
+          }
+        },
+
+        {
+          "id": "wh_aguardar",
+          "name": "5. Aguardar 60s (evitar falso positivo)",
+          "type": "n8n-nodes-base.wait",
+          "typeVersion": 1,
+          "position": [1120, 200],
+          "parameters": {
+            "resume": "timeInterval",
+            "unit": "seconds",
+            "amount": 60
+          },
+          "notes": "Aguarda 60 segundos antes de tentar reconectar — evita disparar reconexão em quedas temporárias de menos de 1 minuto."
+        },
+
+        {
+          "id": "wh_checar_ainda_caiu",
+          "name": "6. Ainda está Desconectado?",
+          "type": "n8n-nodes-base.httpRequest",
+          "typeVersion": 4,
+          "position": [1340, 200],
+          "parameters": {
+            "method": "GET",
+            "url": "=https://SUA_EVOLUTION_URL/instance/connectionState/{{ $('2. Extrair Evento').item.json.instancia }}",
+            "sendHeaders": true,
+            "headerParameters": {
+              "parameters": [
+                { "name": "apikey", "value": "SUA_EVOLUTION_KEY" }
+              ]
+            },
+            "options": { "response": { "response": { "neverError": true } } }
+          },
+          "notes": "Verifica de novo após 60s. Se já reconectou sozinho, não faz nada."
+        },
+
+        {
+          "id": "wh_if_ainda_caiu",
+          "name": "7. Continua Desconectado?",
+          "type": "n8n-nodes-base.if",
+          "typeVersion": 2,
+          "position": [1560, 200],
+          "parameters": {
+            "conditions": {
+              "conditions": [
+                {
+                  "leftValue": "={{ $json.instance?.state || $json.state || 'close' }}",
+                  "rightValue": "open",
+                  "operator": { "type": "string", "operation": "notEquals" }
+                }
+              ],
+              "combinator": "and"
+            }
+          }
+        },
+
+        {
+          "id": "wh_reconectar",
+          "name": "8. Tentar Reconexão Automática",
+          "type": "n8n-nodes-base.httpRequest",
+          "typeVersion": 4,
+          "position": [1780, 120],
+          "parameters": {
+            "method": "GET",
+            "url": "=https://SUA_EVOLUTION_URL/instance/connect/{{ $('2. Extrair Evento').item.json.instancia }}",
+            "sendHeaders": true,
+            "headerParameters": {
+              "parameters": [
+                { "name": "apikey", "value": "SUA_EVOLUTION_KEY" }
+              ]
+            }
+          }
+        },
+
+        {
+          "id": "wh_notificar",
+          "name": "9. Notificar via Telegram",
+          "type": "n8n-nodes-base.httpRequest",
+          "typeVersion": 4,
+          "position": [2000, 120],
+          "parameters": {
+            "method": "POST",
+            "url": "https://api.telegram.org/botSEU_TELEGRAM_TOKEN/sendMessage",
+            "sendHeaders": true,
+            "headerParameters": [{ "name": "Content-Type", "value": "application/json" }],
+            "sendBody": true,
+            "bodyParameters": {
+              "parameters": [
+                {
+                  "name": "=",
+                  "value": "={ \"chat_id\": \"SEU_TELEGRAM_CHAT_ID\", \"text\": \"🔄 *Reconexão automática tentada*\\n\\nClínica: {{ $('4. Buscar Clínica pela Instância').item.json[0]?.nome || 'Desconhecida' }}\\nInstância: {{ $('2. Extrair Evento').item.json.instancia }}\\n\\nSe o WhatsApp ainda não estiver funcionando em 5 minutos, acesse o painel da Evolution API para escanear o QR Code.\", \"parse_mode\": \"Markdown\" }"
+                }
+              ]
+            }
+          },
+          "notes": "Avisa você que teve uma queda e que a reconexão automática foi tentada."
+        },
+
+        {
+          "id": "wh_respond",
+          "name": "10. Responder Webhook (200 OK)",
+          "type": "n8n-nodes-base.respondToWebhook",
+          "typeVersion": 1,
+          "position": [460, 460],
+          "parameters": {
+            "respondWith": "json",
+            "responseBody": "={ \"status\": \"received\" }"
+          }
+        }
+      ],
+
+      "connections": {
+        "1. Webhook — Evolution Notifica Queda": { "main": [[{ "node": "2. Extrair Evento", "type": "main", "index": 0 }]] },
+        "2. Extrair Evento":                     { "main": [[{ "node": "3. É uma Queda?",   "type": "main", "index": 0 }]] },
+        "3. É uma Queda?":                       { "main": [[{ "node": "4. Buscar Clínica pela Instância", "type": "main", "index": 0 }], [{ "node": "10. Responder Webhook (200 OK)", "type": "main", "index": 0 }]] },
+        "4. Buscar Clínica pela Instância":      { "main": [[{ "node": "5. Aguardar 60s (evitar falso positivo)", "type": "main", "index": 0 }]] },
+        "5. Aguardar 60s (evitar falso positivo)":{ "main": [[{ "node": "6. Ainda está Desconectado?", "type": "main", "index": 0 }]] },
+        "6. Ainda está Desconectado?":           { "main": [[{ "node": "7. Continua Desconectado?",    "type": "main", "index": 0 }]] },
+        "7. Continua Desconectado?":             { "main": [[{ "node": "8. Tentar Reconexão Automática", "type": "main", "index": 0 }], []] },
+        "8. Tentar Reconexão Automática":        { "main": [[{ "node": "9. Notificar via Telegram",    "type": "main", "index": 0 }]] }
+      }
+    }
+
+  ]
+}
