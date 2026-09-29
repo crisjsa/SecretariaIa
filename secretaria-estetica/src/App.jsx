@@ -350,6 +350,47 @@ function WizardClinic({data, setData, errs}) {
   );
 }
 
+function WizardTeam({data, setData}) {
+  const pros = data.profissionais || [];
+  function addPro() { setData(d => ({...d, profissionais:[...pros, {id:Date.now(), nome:"", especialidade:"", comissao:""}]})); }
+  function rmPro(id) { setData(d => ({...d, profissionais:pros.filter(p => p.id !== id)})); }
+  function updPro(id,k,v) { setData(d => ({...d, profissionais:pros.map(p => p.id===id ? {...p,[k]:v} : p)})); }
+
+  return (
+    <div>
+      <div className="tab-row">
+        {[{id:"unico",l:"👤 Profissional único"},{id:"multiplos",l:"👥 Equipe"}].map(t => (
+          <button key={t.id} className={"tab-btn" + (data.modo_equipe===t.id ? " active" : "")}
+            onClick={() => setData(d => ({...d, modo_equipe:t.id}))}>{t.l}</button>
+        ))}
+      </div>
+
+      {data.modo_equipe === "multiplos" && (
+        <>
+          <div className="svc-head">
+            <span>Nome</span><span>Especialidade</span><span>Comissão (%)</span><span/>
+          </div>
+          {pros.map(p => (
+            <div key={p.id} className="svc-row">
+              <input type="text" placeholder="Ex: Ana Souza" value={p.nome}
+                onChange={e => updPro(p.id,"nome",e.target.value)}/>
+              <input type="text" placeholder="Ex: Esteticista" value={p.especialidade}
+                onChange={e => updPro(p.id,"especialidade",e.target.value)}/>
+              <div className="num-cell">
+                <input type="number" placeholder="0" value={p.comissao}
+                  onChange={e => updPro(p.id,"comissao",e.target.value)}/>
+                <span>%</span>
+              </div>
+              <button className="x-sm" onClick={() => rmPro(p.id)}>✕</button>
+            </div>
+          ))}
+          <button className="add-btn" onClick={addPro}>+ Adicionar profissional</button>
+        </>
+      )}
+    </div>
+  );
+}
+
 function WizardAssistant({data, setData}) {
   const prev = `Olá! ${data.emoji||"✨"} Bem-vinda à ${data.clinicNome||"sua clínica"}! Sou ${data.nome||"Luna"}. Posso agendar, tirar dúvidas ou te conectar com nossa atendente. 😊`;
   return (
@@ -697,10 +738,10 @@ function WizardSuccess({clinicName, asstName, planId}) {
 }
 
 function Wizard({defaultPlan, onClose, onComplete}) {
-  const STEPS = 8;
+  const STEPS = 9;
   const [step, setStep]         = useState(1);
   const [planD, setPlanD]       = useState({plan: defaultPlan || "profissional"});
-  const [clinicD, setClinicD]   = useState({nome:"", wpp:"", cidade:"", resp:"", email:""});
+  const [clinicD, setClinicD]   = useState({nome:"", wpp:"", cidade:"", resp:"", email:"", modo_equipe:"unico", profissionais:[]});
   const [asstD, setAsstD]       = useState({nome:"Luna", emoji:"💆‍♀️", tom:"amigavel", welcome:"", clinicNome:""});
   const [svcD, setSvcD]         = useState({services:[...DEFAULT_SERVICES], packages:[], tab:"avulso"});
   const [schedD, setSchedD]     = useState({
@@ -728,15 +769,16 @@ function Wizard({defaultPlan, onClose, onComplete}) {
   function next() { if (validate()) setStep(s => Math.min(s+1, STEPS)); }
   function back() { setStep(s => Math.max(s-1, 1)); }
 
-  const LABELS = ["Plano","Clínica","Assistente","Serviços","Agenda","Pagamento","Conta","Pronto!"];
+  const LABELS = ["Plano","Clínica","Equipe","Assistente","Serviços","Agenda","Pagamento","Conta","Pronto!"];
   const TITLES = [
-    "Escolha seu plano", "Dados da clínica", "Personalize a assistente",
+    "Escolha seu plano", "Dados da clínica", "Sua equipe", "Personalize a assistente",
     "Seus serviços", "Horários de atendimento", "Método de pagamento",
     "Crie sua conta", "Configuração concluída"
   ];
   const SUBS = [
     "Mude a qualquer momento, sem multa.",
     "Informações para sua assistente usar.",
+    "Único profissional ou várias pessoas?",
     "Nome, personalidade e tom de voz.",
     "A IA informa preços automaticamente.",
     "Quando sua clínica recebe agendamentos?",
@@ -764,18 +806,19 @@ function Wizard({defaultPlan, onClose, onComplete}) {
 
           {step===1 && <WizardPlan      data={planD}    setData={setPlanD}/>}
           {step===2 && <WizardClinic    data={clinicD}  setData={setClinicD} errs={errs}/>}
-          {step===3 && <WizardAssistant data={asstD}    setData={setAsstD}/>}
-          {step===4 && <WizardServices  data={svcD}     setData={setSvcD}/>}
-          {step===5 && <WizardSchedule  data={schedD}   setData={setSchedD}/>}
-          {step===6 && <WizardPayment   planId={planD.plan}/>}
-          {step===7 && <WizardAccount   email={clinicD.email} onGoogle={() => setGoogleOk(true)} googleOk={googleOk}/>}
-          {step===8 && <WizardSuccess   clinicName={clinicD.nome} asstName={asstD.nome} planId={planD.plan}/>}
+          {step===3 && <WizardTeam      data={clinicD}  setData={setClinicD}/>}
+          {step===4 && <WizardAssistant data={asstD}    setData={setAsstD}/>}
+          {step===5 && <WizardServices  data={svcD}     setData={setSvcD}/>}
+          {step===6 && <WizardSchedule  data={schedD}   setData={setSchedD}/>}
+          {step===7 && <WizardPayment   planId={planD.plan}/>}
+          {step===8 && <WizardAccount   email={clinicD.email} onGoogle={() => setGoogleOk(true)} googleOk={googleOk}/>}
+          {step===9 && <WizardSuccess   clinicName={clinicD.nome} asstName={asstD.nome} planId={planD.plan}/>}
 
           {step < STEPS && (
             <div className="wiz-foot">
               {step > 1 ? <button className="btn-back" onClick={back}>← Voltar</button> : <div/>}
-              <button className={"btn-next" + (step >= 6 ? " primary" : "")} onClick={next}>
-                {step === 7 ? "✦ Finalizar e Ativar" : "Continuar →"}
+              <button className={"btn-next" + (step >= 7 ? " primary" : "")} onClick={next}>
+                {step === 8 ? "✦ Finalizar e Ativar" : "Continuar →"}
               </button>
             </div>
           )}
